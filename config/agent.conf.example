@@ -1,0 +1,8 @@
+# Configuration for home-server-agent. This file is sourced by Bash.
+# Warn when any persistent filesystem reaches this percentage.
+MAX_DISK_PERCENT=85
+# Warn when 1-minute load divided by available CPUs is above this value.
+MAX_LOAD_PER_CPU=1.50
+# Optional: a root-owned command that returns zero when your critical service is healthy.
+# Example: CHECK_COMMAND='systemctl is-active --quiet jellyfin.service'
+CHECK_COMMAND=''

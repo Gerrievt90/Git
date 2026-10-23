@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Install or remove the local home-server health agent.
+set -Eeuo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: sudo ./bin/setup-home-server-agent [install|uninstall|status]
+
+install    Install the agent, config, systemd service, and 5-minute timer (default).
+uninstall  Stop and remove the units and agent-owned state. Keeps the config as .bak.
+status     Show timer, service, and most recent health result.
+USAGE
+}
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'Run this command with sudo.' >&2; exit 1; }
+command=${1:-install}
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+install -d -m 0755 /etc/home-server-agent /var/lib/home-server-agent /var/log/home-server-agent
+
+case "$command" in
+  install)
+    install -m 0755 "$repo_dir/bin/home-server-agent" /usr/local/sbin/home-server-agent
+    if [[ ! -e /etc/home-server-agent/agent.conf ]]; then
+      install -m 0640 -o root -g root "$repo_dir/config/agent.conf.example" /etc/home-server-agent/agent.conf
+    fi
+    install -m 0644 "$repo_dir/systemd/home-server-agent.service" /etc/systemd/system/home-server-agent.service
+    install -m 0644 "$repo_dir/systemd/home-server-agent.timer" /etc/systemd/system/home-server-agent.timer
+    systemctl daemon-reload
+    systemctl enable --now home-server-agent.timer
+    systemctl start home-server-agent.service
+    echo 'Installed. Review /etc/home-server-agent/agent.conf, then run: systemctl status home-server-agent.timer'
+    ;;
+  uninstall)
+    systemctl disable --now home-server-agent.timer 2>/dev/null || true
+    rm -f /etc/systemd/system/home-server-agent.service /etc/systemd/system/home-server-agent.timer /usr/local/sbin/home-server-agent
+    [[ -f /etc/home-server-agent/agent.conf ]] && mv /etc/home-server-agent/agent.conf /etc/home-server-agent/agent.conf.bak
+    rm -rf /var/lib/home-server-agent /var/log/home-server-agent
+    systemctl daemon-reload
+    echo 'Removed agent files. Configuration, if present, is at /etc/home-server-agent/agent.conf.bak.'
+    ;;
+  status)
+    systemctl status --no-pager home-server-agent.timer || true
+    printf '\nLatest health record:\n'
+    tail -n 1 /var/log/home-server-agent/health.jsonl 2>/dev/null || echo 'No health record has been written yet.'
+    ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac
