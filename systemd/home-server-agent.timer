@@ -1,0 +1,11 @@
+[Unit]
+Description=Run home server health agent every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=home-server-agent.service
+
+[Install]
+WantedBy=timers.target

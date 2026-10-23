@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# A small, dependency-free health agent for an Ubuntu home server.
+set -Eeuo pipefail
+
+CONFIG_FILE="${HOME_SERVER_AGENT_CONFIG:-/etc/home-server-agent/agent.conf}"
+if [[ -r "$CONFIG_FILE" ]]; then
+  # The config is administrator-owned and consists only of KEY=value settings.
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+fi
+
+STATE_DIR="${STATE_DIR:-/var/lib/home-server-agent}"
+LOG_FILE="${LOG_FILE:-/var/log/home-server-agent/health.jsonl}"
+MAX_DISK_PERCENT="${MAX_DISK_PERCENT:-85}"
+MAX_LOAD_PER_CPU="${MAX_LOAD_PER_CPU:-1.50}"
+CHECK_COMMAND="${CHECK_COMMAND:-}"
+
+require_uint() {
+  [[ "$1" =~ ^[0-9]+$ ]] || { echo "Expected an integer, got '$1'" >&2; exit 2; }
+}
+require_number() {
+  [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "Expected a number, got '$1'" >&2; exit 2; }
+}
+require_uint "$MAX_DISK_PERCENT"
+require_number "$MAX_LOAD_PER_CPU"
+
+mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
+
+utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+escape_json() {
+  local value=${1//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  printf '%s' "$value"
+}
+
+status="ok"
+problems=()
+
+while read -r filesystem percent mountpoint; do
+  percent=${percent%%%}
+  [[ "$percent" =~ ^[0-9]+$ ]] || continue
+  if (( percent >= MAX_DISK_PERCENT )); then
+    status="warning"
+    problems+=("disk ${mountpoint} is ${percent}% full")
+  fi
+done < <(df -P -x tmpfs -x devtmpfs | awk 'NR > 1 {print $1, $5, $6}')
+
+read -r load1 _ < /proc/loadavg
+cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
+if awk -v current_load="$load1" -v cpus="$cpus" -v limit="$MAX_LOAD_PER_CPU" 'BEGIN { exit !(current_load / cpus > limit) }'; then
+  status="warning"
+  problems+=("load average ${load1} exceeds ${MAX_LOAD_PER_CPU} per CPU")
+fi
+
+if ! systemctl is-system-running --quiet 2>/dev/null; then
+  status="warning"
+  problems+=("systemd reports a degraded or non-running state")
+fi
+
+if [[ -n "$CHECK_COMMAND" ]] && ! bash -c "$CHECK_COMMAND"; then
+  status="warning"
+  problems+=("custom check failed")
+fi
+
+problems_json=""
+for problem in "${problems[@]}"; do
+  [[ -n "$problems_json" ]] && problems_json+="," 
+  problems_json+="\"$(escape_json "$problem")\""
+done
+record="{\"timestamp\":\"$(utc_now)\",\"host\":\"$(escape_json "$(hostname -f 2>/dev/null || hostname)")\",\"status\":\"${status}\",\"load_1m\":${load1},\"cpus\":${cpus},\"problems\":[${problems_json}]}"
+printf '%s\n' "$record" >> "$LOG_FILE"
+printf '%s\n' "$record"
+printf '%s\n' "$status" > "$STATE_DIR/status"
+
+[[ "$status" == "ok" ]]
